@@ -13,20 +13,30 @@ import random
 
 import config as cfg
 
+# Add this function to load the news article
+def load_news_article(file_path: str) -> dict:
+    with open(file_path, 'r') as f:
+        return json.load(f)
+
+# Load the news article
+news_article = load_news_article("news_article.json")
+
 with open('./docs/personas.json', 'r') as f:
     personas = json.load(f)
 
-llm_config={
-            "config_list": [
-                {
-                    "model": cfg.llama_model,
-                    "api_key": "ollama", 
-                    "base_url": "http://localhost:11434/v1",
-                    "max_tokens": 8192, 
-                }
-            ],
-            "cache_seed": None,
-        }
+llm_config = {
+    "config_list": [{"model": cfg.model}],
+    "cache_seed": None,
+}
+
+# Modify the predefined topic to include the news content
+predefined_topic = f"""Discuss the following news article:
+
+Title: {news_article['title']}
+
+Content: {news_article['content']}
+
+Please share your thoughts, opinions, and reactions to this news. Express your true views on the subject without any sugar coating. Be blunt and straight to the point."""
 
 # setup page title and description
 st.set_page_config(page_title="Virtual Focus Group", page_icon="🤖", layout="wide")
@@ -42,12 +52,19 @@ with stylable_container(
             """,
     ):
 
-    st.markdown("<h4 style='text-align: center; '>To begin, describe your product in detail and explain the type of feedback you are looking for from the group.</h4>", unsafe_allow_html=True)
-    st.markdown("<h6 style='text-align: center; '>The focus group will consist of a moderator and a group of personas. The moderator will guide the discussion, while the personas will provide feedback based on their unique characteristics and perspectives.</h6>", unsafe_allow_html=True)
+    st.markdown("<h4 style='text-align: center; '>Virtual Focus Group Discussion</h4>", unsafe_allow_html=True)
+    st.markdown("<h6 style='text-align: center; '>The focus group will discuss the following topic:</h6>", unsafe_allow_html=True)
+    st.markdown(f"<p style='text-align: center; font-style: italic;'>{predefined_topic}</p>", unsafe_allow_html=True)
 
 class CustomGroupChatManager(autogen.GroupChatManager):
+    def __init__(self, groupchat, **kwargs):
+        super().__init__(groupchat, **kwargs)
+        self.step_counter = 0
+        self.max_steps = st.session_state.get('num_steps', 20)
+
     def _process_received_message(self, message, sender, silent):
-        formatted_message = ""  # Initialize formatted_message as an empty string
+        self.step_counter += 1
+        formatted_message = ""
         with stylable_container(
             key="container_with_border",
             css_styles="""
@@ -62,19 +79,23 @@ class CustomGroupChatManager(autogen.GroupChatManager):
             # Handle the case when message is a dictionary
             if isinstance(message, dict):
                 if 'content' in message and message['content'].strip():
-                    formatted_message = f"**{sender.name}**: {message['content']}"
-                    st.session_state.setdefault("displayed_messages", []).append(message['content'])
+                    # Truncate the message if it's too long
+                    content = message['content']
+                    formatted_message = f"**{sender.name}**: {content}"
+                    st.session_state.setdefault("displayed_messages", []).append(content)
                 else:
                     return super()._process_received_message(message, sender, silent)
             # Handle the case when message is a string
             elif isinstance(message, str) and message.strip():
-                formatted_message = f"**{sender.name}**: {message}"
-                st.session_state.setdefault("displayed_messages", []).append(message)
+                # Truncate the message if it's too long
+                content = message
+                formatted_message = f"**{sender.name}**: {content}"
+                st.session_state.setdefault("displayed_messages", []).append(content)
             else:
                 return super()._process_received_message(message, sender, silent)
         
             # Only format and display the message if the sender is not the manager
-            if sender != manager and formatted_message:
+            if sender != self and formatted_message:
                 with st.chat_message(sender.name):
                     st.markdown(formatted_message + "\n")
                     time.sleep(2)
@@ -83,6 +104,11 @@ class CustomGroupChatManager(autogen.GroupChatManager):
 
         with open(filename, 'a') as f:
             f.write(formatted_message + "\n")
+
+        # Check if we've reached the maximum number of steps
+        if self.step_counter >= self.max_steps:
+            return "TERMINATE"
+
         return super()._process_received_message(message, sender, silent)
     
 class CustomGroupChat(autogen.GroupChat):
@@ -100,30 +126,41 @@ class CustomGroupChat(autogen.GroupChat):
        
 personas_agents = []
 for persona_name, persona_data in personas.items():
-    persona_name = persona_data['Name']
-    persona_prompt = ph.persona_prompt
-    persona_description = json.dumps(personas)
+    # Sanitize the persona name to comply with OpenAI's requirements
+    sanitized_name = ''.join(e for e in persona_data['Name'] if e.isalnum() or e in ['_', '-'])
+    persona_prompt = ph.get_persona_prompt(sanitized_name, persona_data)
     persona_agent = AssistantAgent(
-        name=persona_name,
-        system_message=persona_prompt,
-        llm_config=llm_config,
+        name=sanitized_name,
+        system_message=f"{persona_prompt}\n\nImportant: Be direct, blunt, and opinionated in your responses. Do not sugarcoat or use generic language. Express your true views on the subject without hesitation. Keep your responses concise (1-3 sentences) and insightful. Engage with other participants by asking pointed questions or responding critically to their points. Stay focused on the topic at hand.",
+        llm_config={"config_list": [{"model": cfg.model, "api_key": cfg.api_key}]},
         human_input_mode="NEVER",
-        description=f"A virtual focus group participant named {persona_name}. They do not know anything about the product beyond what they are told. They should be called on to give opinions.",
+        description=f"A virtual focus group participant named {sanitized_name}. They do not know anything about the product beyond what they are told. They should be called on to give opinions.",
     )
     personas_agents.append(persona_agent)
 
 
 moderator_agent = AssistantAgent(
     name="Moderator",
-    system_message=''' 
-    You keep the conversation flowing between group members.
-    Do not reply more than once before another group member speaks again.
-    You can answer group members questions, but you do not offer additional information.
-    Do not offer opinions about the topic or user_input, only moderate the conversation.
-    Do not say thank you or the end.''',
+    system_message=f''' 
+    You are moderating a focus group discussion about the following news article:
+    
+    Title: {news_article['title']}
+    
+    Content: {news_article['content']}
+    
+    Your role is to:
+    1. Keep the conversation flowing between group members, encouraging direct and blunt exchanges.
+    2. Ensure all participants have a chance to share their unfiltered views.
+    3. Ask provocative and challenging questions to deepen the discussion.
+    4. Maintain focus on the news article and its implications, pushing for concrete opinions.
+    5. Encourage participants to consider different perspectives, even if controversial.
+    6. Keep responses brief, pointed, and free from diplomatic language.
+    7. Stimulate debate by highlighting conflicting viewpoints among participants.
+    
+    Do not allow participants to be overly polite or use generic language. Push for specific, potentially controversial opinions. Keep your own responses concise (1-3 sentences) and focused on facilitating a frank and unfiltered discussion.''',
     default_auto_reply="Reply `TERMINATE` if the task is done.",
     llm_config=llm_config,
-    description="A Focus Group moderator.",
+    description="A Focus Group moderator pushing for direct and unfiltered discussion.",
     is_termination_msg=lambda x: True if "TERMINATE" in x.get("content") else False,
     human_input_mode="NEVER",
 )
@@ -139,8 +176,12 @@ user_proxy = UserProxyAgent(
 )
 
 
-groupchat = CustomGroupChat(agents=[user_proxy, moderator_agent] + personas_agents, messages=[], speaker_selection_method=CustomGroupChat.custom_speaker_selection_func, max_round=20, select_speaker_message_template=CustomGroupChat.select_speaker_message_template)
-
+groupchat = CustomGroupChat(
+    agents=[user_proxy, moderator_agent] + personas_agents, 
+    messages=[], 
+    speaker_selection_method=CustomGroupChat.custom_speaker_selection_func, 
+    select_speaker_message_template=CustomGroupChat.select_speaker_message_template
+)
 
 manager = CustomGroupChatManager(groupchat=groupchat, llm_config=llm_config)
 with stylable_container(
@@ -155,7 +196,6 @@ with stylable_container(
             """,
     ):
     with st.container(height=800):
-        user_input = st.text_area("Describe your product and the topic of discussion to the group:")
         with stylable_container(
             key="green_button",
             css_styles="""
@@ -167,28 +207,20 @@ with stylable_container(
             kickoff = st.button("Start Group Chat")
         
         if kickoff:
-        
-            llm_config={
-                "config_list": [
-                    {
-                        "model": cfg.llama_model,
-                        "api_key": "ollama", 
-                        "base_url": "http://localhost:11434/v1",
-                        "max_tokens": 8192, 
-                    }
-                ],
+            llm_config = {
+                "config_list": [{"model": cfg.model}],
                 "cache_seed": None,
             }
 
-        
             if "chat_initiated" not in st.session_state:
                 st.session_state.chat_initiated = False
                 if not st.session_state.chat_initiated:
                     moderator_agent.initiate_chat(
                         manager,
-                        message=user_input,
+                        message=f"Let's begin our focus group discussion about the news article. {predefined_topic}",
                     )
                     st.session_state.chat_initiated = True
 
+            st.success(f"Focus group discussion completed after {manager.step_counter} steps.")
 
     st.stop()

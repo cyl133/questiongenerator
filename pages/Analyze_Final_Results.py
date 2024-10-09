@@ -43,14 +43,20 @@ with stylable_container(
                     st.markdown("<h1 style='text-align: center; ;'>Analysis of Group Chat</h1>", unsafe_allow_html=True)
                     st.markdown("<h4 style='text-align: center; color: grey;'>The following is a summary of the focus group chat.</h4>", unsafe_allow_html=True)
 
-                llm = cfg.completions_model
-
-                response = llm.chat.completions.create(
-                    messages = [
-                        {"role": "system",
-                        "content": f"Analyze the focus group chat and provide a detailed summary and analysis of the discussion in markdown format. Chat: {summary}"},
-                    ],
-                    model=cfg.llama_model
+                response = cfg.client.chat.completions.create(
+                    model=cfg.model,
+                    messages=[
+                        {"role": "system", "content": """Analyze the focus group chat and provide:
+                        A set of 7-10 insightful questions based on the discussion that could lead the readers' thinking on the news.
+                        
+                        These questions should:
+                        1. Be thought-provoking and open-ended
+                        2. Address key themes or insights that emerged from the discussion
+                        4. Challenge assumptions or uncover hidden opportunities
+                        
+                        Format your response as a numbered list of questions in markdown."""},
+                        {"role": "user", "content": f"Chat: {summary}"}
+                    ]
                 )
 
                 analysis = response.choices[0].message.content
@@ -68,7 +74,9 @@ with stylable_container(
                 ):
                     with st.container(height=800):
 
+                        st.markdown("<h2 style='text-align: center;'>Insightful Questions from Focus Group Analysis</h2>", unsafe_allow_html=True)
                         st.markdown(analysis, unsafe_allow_html=True)
 
                 with open("./docs/final_analysis.md", 'w') as f:
+                    f.write("# Insightful Questions from Focus Group Analysis\n\n")
                     f.write(analysis)
