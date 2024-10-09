@@ -10,8 +10,9 @@ import autogen
 from autogen import AssistantAgent, UserProxyAgent, Agent
 import persona_handler as ph
 import random
-
 import config as cfg
+from tenacity import retry, stop_after_attempt, wait_fixed, retry_if_exception_type
+import openai
 
 # Add this function to load the news article
 def load_news_article(file_path: str) -> dict:
@@ -62,54 +63,59 @@ class CustomGroupChatManager(autogen.GroupChatManager):
         self.step_counter = 0
         self.max_steps = st.session_state.get('num_steps', 20)
 
+    @retry(stop=stop_after_attempt(3), wait=wait_fixed(2), retry=retry_if_exception_type(openai.InternalServerError))
+    def _process_received_message_with_retry(self, message, sender, silent):
+        return super()._process_received_message(message, sender, silent)
+
     def _process_received_message(self, message, sender, silent):
-        self.step_counter += 1
-        formatted_message = ""
-        with stylable_container(
-            key="container_with_border",
-            css_styles="""
-                {
-                    border: 1px solid rgba(49, 51, 63, 0.2);
-                    border-radius: 0.5rem;
-                    padding: calc(1em - 1px);
-                    box-shadow: 0 4px 8px 0 rgba(0, 0, 0, 0.2), 0 6px 20px 0 rgba(0, 0, 0, 0.19);
-                }
-                """,
-        ):
-            # Handle the case when message is a dictionary
-            if isinstance(message, dict):
-                if 'content' in message and message['content'].strip():
+        try:
+            result = self._process_received_message_with_retry(message, sender, silent)
+            self.step_counter += 1
+            formatted_message = ""
+            with stylable_container(
+                key="container_with_border",
+                css_styles="""
+                    {
+                        border: 1px solid rgba(49, 51, 63, 0.2);
+                        border-radius: 0.5rem;
+                        padding: calc(1em - 1px);
+                        box-shadow: 0 4px 8px 0 rgba(0, 0, 0, 0.2), 0 6px 20px 0 rgba(0, 0, 0, 0.19);
+                    }
+                    """,
+            ):
+                # Handle the case when message is a dictionary
+                if isinstance(message, dict):
+                    if 'content' in message and message['content'].strip():
+                        # Truncate the message if it's too long
+                        content = message['content']
+                        formatted_message = f"**{sender.name}**: {content}"
+                        st.session_state.setdefault("displayed_messages", []).append(content)
+                # Handle the case when message is a string
+                elif isinstance(message, str) and message.strip():
                     # Truncate the message if it's too long
-                    content = message['content']
+                    content = message
                     formatted_message = f"**{sender.name}**: {content}"
                     st.session_state.setdefault("displayed_messages", []).append(content)
-                else:
-                    return super()._process_received_message(message, sender, silent)
-            # Handle the case when message is a string
-            elif isinstance(message, str) and message.strip():
-                # Truncate the message if it's too long
-                content = message
-                formatted_message = f"**{sender.name}**: {content}"
-                st.session_state.setdefault("displayed_messages", []).append(content)
-            else:
-                return super()._process_received_message(message, sender, silent)
+            
+                # Only format and display the message if the sender is not the manager
+                if sender != self and formatted_message:
+                    with st.chat_message(sender.name):
+                        st.markdown(formatted_message + "\n")
+                        time.sleep(2)
         
-            # Only format and display the message if the sender is not the manager
-            if sender != self and formatted_message:
-                with st.chat_message(sender.name):
-                    st.markdown(formatted_message + "\n")
-                    time.sleep(2)
-    
-        filename = "./docs/chat_summary.txt"
+            filename = "./docs/chat_summary.txt"
 
-        with open(filename, 'a') as f:
-            f.write(formatted_message + "\n")
+            with open(filename, 'a') as f:
+                f.write(formatted_message + "\n")
 
-        # Check if we've reached the maximum number of steps
-        if self.step_counter >= self.max_steps:
+            # Check if we've reached the maximum number of steps
+            if self.step_counter >= self.max_steps:
+                return "TERMINATE"
+
+            return result
+        except Exception as e:
+            st.error(f"Error occurred during conversation: {str(e)}")
             return "TERMINATE"
-
-        return super()._process_received_message(message, sender, silent)
     
 class CustomGroupChat(autogen.GroupChat):
     @staticmethod
@@ -131,7 +137,7 @@ for persona_name, persona_data in personas.items():
     persona_prompt = ph.get_persona_prompt(sanitized_name, persona_data)
     persona_agent = AssistantAgent(
         name=sanitized_name,
-        system_message=f"{persona_prompt}\n\nImportant: Be direct, blunt, and opinionated in your responses. Do not sugarcoat or use generic language. Express your true views on the subject without hesitation. Keep your responses concise (1-3 sentences) and insightful. Engage with other participants by asking pointed questions or responding critically to their points. Stay focused on the topic at hand.",
+        system_message=f"{persona_prompt}\n\nImportant: Keep your responses highly personal. Be sure to directly ENGAGE the other PARTIES. Stick to SPECIFIC points mentioned in then news. Consider the backstory of the character deeply, including knowledge of past events and situations, be sure to introduce such knowledge to concretize the discussion. Be direct, blunt, and opinionated in your responses. Do not sugarcoat or use generic language. Express your true views on the subject without hesitation. Stay focused on the topic at hand.",
         llm_config={"config_list": [{"model": cfg.model, "api_key": cfg.api_key}]},
         human_input_mode="NEVER",
         description=f"A virtual focus group participant named {sanitized_name}. They do not know anything about the product beyond what they are told. They should be called on to give opinions.",
@@ -142,6 +148,8 @@ for persona_name, persona_data in personas.items():
 moderator_agent = AssistantAgent(
     name="Moderator",
     system_message=f''' 
+    重要：在对话过程中完全使用中文
+    
     You are moderating a focus group discussion about the following news article:
     
     Title: {news_article['title']}
@@ -214,12 +222,14 @@ with stylable_container(
 
             if "chat_initiated" not in st.session_state:
                 st.session_state.chat_initiated = False
-                if not st.session_state.chat_initiated:
-                    moderator_agent.initiate_chat(
-                        manager,
-                        message=f"Let's begin our focus group discussion about the news article. {predefined_topic}",
-                    )
-                    st.session_state.chat_initiated = True
+            
+            if not st.session_state.chat_initiated:
+                moderator_agent.initiate_chat(
+                    manager,
+                    message=f"Let's begin our focus group discussion about the news article. {predefined_topic}",
+                    max_turns=st.session_state.get('num_steps', 10)
+                )
+                st.session_state.chat_initiated = True
 
             st.success(f"Focus group discussion completed after {manager.step_counter} steps.")
 

@@ -2,3 +2,5 @@ autogen
 streamlit
 streamlit_extras
 langchain_openai
+python-dotenv==1.0.0
+PyYAML==6.0

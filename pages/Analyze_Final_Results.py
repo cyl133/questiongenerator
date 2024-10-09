@@ -46,14 +46,12 @@ with stylable_container(
                 response = cfg.client.chat.completions.create(
                     model=cfg.model,
                     messages=[
-                        {"role": "system", "content": """Analyze the focus group chat and provide:
-                        A set of 7-10 insightful questions based on the discussion that could lead the readers' thinking on the news.
-                        
-                        These questions should:
-                        1. Be thought-provoking and open-ended
-                        2. Address key themes or insights that emerged from the discussion
-                        4. Challenge assumptions or uncover hidden opportunities
-                        
+                        {"role": "system", "content": """
+                        重要：用中文来回答
+                         
+                        Based on key points of contention in the discussion the focus group chat, provide:
+                        A set of 5 controversial questions based on the discussion to guide readers' thinking on the news by providing sufficient contexts to allow users to draw their own conclusion.
+                                                
                         Format your response as a numbered list of questions in markdown."""},
                         {"role": "user", "content": f"Chat: {summary}"}
                     ]
