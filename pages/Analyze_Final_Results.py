@@ -44,14 +44,20 @@ with stylable_container(
                     st.markdown("<h4 style='text-align: center; color: grey;'>The following is a summary of the focus group chat.</h4>", unsafe_allow_html=True)
 
                 response = cfg.client.chat.completions.create(
-                    model=cfg.model,
+                    model="chatgpt-4o-latest",
                     messages=[
                         {"role": "system", "content": """
                         重要：用中文来回答
                          
-                        Based on key points of contention in the discussion the focus group chat, provide:
-                        A set of 5 controversial questions based on the discussion to guide readers' thinking on the news by providing sufficient contexts to allow users to draw their own conclusion.
-                                                
+                        Analyze the focus group chat and provide:
+                        A set of 5 controversial questions based on the discussion to guide readers' thinking on the news
+                        
+                        Providing SUFFICIENT contexts to allow users to draw their own conclusion.
+                        
+                        Do not explicitly mention the discussion.
+
+                        These questions should really reflect on the key points of contention in the discussion, and be very specific.
+                        
                         Format your response as a numbered list of questions in markdown."""},
                         {"role": "user", "content": f"Chat: {summary}"}
                     ]
